@@ -1,0 +1,249 @@
+{
+  "_about": "Single source of truth for every modelling assumption. Each entry: value, unit, source, note. Read by pipeline/build_data.py and src/sim. Generic aircraft profiles only; manufacturer pages are cited as evidence for the class, not modelled as products.",
+  "data": {
+    "callsDataset": {
+      "value": "2zdj-bwza",
+      "unit": "Socrata id",
+      "source": "DataSF, Law Enforcement Dispatched Calls for Service: Closed, https://data.sf.gov/d/2zdj-bwza (PDDL)",
+      "note": "Domain moved from data.sfgov.org to data.sf.gov in 2026; old host 301-redirects."
+    },
+    "callFilter": {
+      "value": "agency = 'Police' AND onview_flag = 'N'",
+      "unit": "SoQL",
+      "source": "Dataset explainer, https://sfdigitalservices.gitbook.io/dataset-explainers/law-enforcement-dispatched-calls-for-service",
+      "note": "911-originated police calls only. On-view calls (officer already present), HSOC, MTA, Sheriff and HEART are excluded because a drone cannot beat an officer who initiated the call."
+    },
+    "districtsDataset": {
+      "value": "d4vc-q76h",
+      "unit": "Socrata id",
+      "source": "DataSF, Current Police Districts, https://data.sf.gov/d/d4vc-q76h (PDDL)",
+      "note": "New SFPD boundaries effective 2026-10-01. Every call is re-assigned to these boundaries by point-in-polygon so historical days can be replayed under the new districts."
+    },
+    "locationMasking": {
+      "value": "nearest intersection",
+      "unit": "",
+      "source": "DataSF dataset description (Feb 2025 revision note: consistent geo-masked intersections applied to all history)",
+      "note": "Error is at most about half a block (~50-100 m), small next to 1-3 km flights. Calls with no location and sensitive calls (location withheld) are excluded and counted."
+    }
+  },
+  "dispatch": {
+    "maxResponseRadiusKm": {
+      "value": 3.2,
+      "unit": "km",
+      "source": "Assumption (2 miles), common DFR planning radius per dock.",
+      "note": "Calls farther than this from every dock are missed as out of range, even if battery would allow it."
+    },
+    "skipDuplicateCalls": {
+      "value": true,
+      "unit": "bool",
+      "source": "DataSF field dup_cad_number.",
+      "note": "Calls flagged as duplicates of another CAD event are not flown twice."
+    }
+  },
+  "eligibility": {
+    "defaultCallTypes": {
+      "value": [
+        "917",
+        "916",
+        "459",
+        "221",
+        "222",
+        "216",
+        "418",
+        "240",
+        "245",
+        "212",
+        "211",
+        "852",
+        "851",
+        "1030",
+        "100A",
+        "603",
+        "602",
+        "519",
+        "519HR",
+        "809",
+        "807",
+        "594",
+        "601"
+      ],
+      "unit": "call_type codes",
+      "source": "SFPD Drone Flight Logs (giw5-ttjs): most-flown original call types 2024-2026 are wanted/suspicious vehicle, person w/ gun, suspicious person, burglary, assault, auto boost, fight, person w/ knife, robbery, stolen vehicle. Extended with alarms, prowler, break-in, injury accidents, missing persons, vandalism, trespasser.",
+      "note": "917 suspicious person, 916 suspicious vehicle, 459 burglary, 221 person w/ gun, 222 person w/ knife, 216 shots fired, 418 fight no weapon, 240 assault/battery, 245 agg assault/ADW, 212 strongarm robbery, 211 robbery, 852 auto boost/strip, 851 stolen vehicle, 1030 wanted vehicle, 100A audible alarm, 603 prowler, 602 person breaking in, 519 injury vehicle accident, 519HR hit-and-run injury, 809 missing adult, 807 missing juvenile, 594 vandalism, 601 trespasser."
+    },
+    "excludedByDefault": {
+      "value": [
+        "418DV",
+        "240DV",
+        "800",
+        "801",
+        "415"
+      ],
+      "unit": "call_type codes",
+      "source": "Assumption (privacy / policy).",
+      "note": "Domestic violence, mental health and suicide attempts, and noise complaints are off by default: aerial video inside or near homes raises privacy questions that a pilot program would likely settle in policy first. All are toggleable."
+    },
+    "defaultPriorities": {
+      "value": [
+        "A",
+        "B",
+        "C"
+      ],
+      "unit": "priority codes",
+      "source": "Trial Phoenix registration (AEA RCT 18198) targets lower-priority calls; Mission Local 2026-06 on SoMa pilot.",
+      "note": "All priorities are eligible by default; results are always split by priority so queue-driven gains on B/C are not confused with speed."
+    }
+  },
+  "aircraft": {
+    "multirotor": {
+      "label": {
+        "value": "Dock multirotor",
+        "unit": "",
+        "source": "Generic profile.",
+        "note": ""
+      },
+      "launchS": {
+        "value": 20,
+        "unit": "s",
+        "source": "Vendor DFR claim: 'launch in under 20 seconds', https://www.skydio.com/solutions/dfr",
+        "note": "From launch decision to en route: dock open, takeoff."
+      },
+      "cruiseAltitudeFt": {
+        "value": 200,
+        "unit": "ft AGL",
+        "source": "Assumption.",
+        "note": "Typical DFR transit altitude; used for climb time and (later) the FAA facility-map ceiling check."
+      },
+      "climbRateMs": {
+        "value": 6,
+        "unit": "m/s",
+        "source": "Assumption, typical enterprise multirotor ascent rate.",
+        "note": ""
+      },
+      "cruiseSpeedMs": {
+        "value": 18,
+        "unit": "m/s",
+        "source": "Published class specs: 20 m/s max (16 m/s with obstacle avoidance active), https://skydio.com/x10/technical-specs ; 21 m/s sport / 15 m/s normal, https://enterprise.dji.com/dock-2/specs",
+        "note": "18 m/s (~40 mph) sits between obstacle-avoidance-on and max speed for transit at 200 ft AGL."
+      },
+      "landingS": {
+        "value": 30,
+        "unit": "s",
+        "source": "Assumption.",
+        "note": "Descent from cruise altitude, precision landing and dock close at the end of the return leg."
+      },
+      "enduranceMin": {
+        "value": 40,
+        "unit": "min",
+        "source": "Published class specs: 40 min max flight (35 min hover), https://skydio.com/x10/technical-specs ; 50 min max flight (40 min hover), https://enterprise.dji.com/dock-2/specs",
+        "note": "Full battery, still air."
+      },
+      "reservePct": {
+        "value": 20,
+        "unit": "%",
+        "source": "Assumption, common operational reserve.",
+        "note": "Drone leaves scene when remaining battery would drop below this after the return leg."
+      },
+      "minLaunchPct": {
+        "value": 50,
+        "unit": "%",
+        "source": "Assumption, operational policy.",
+        "note": "A drone is only offered for a response with at least this charge (and always enough for out, back, minimum on-scene time and reserve). Without it, a single drone recycles on near-empty batteries and flies far more, far shorter missions than real programs report."
+      },
+      "chargeRatePctPerMin": {
+        "value": 2.2,
+        "unit": "%/min",
+        "source": "Published dock spec: 20->90% in ~32 min, https://enterprise.dji.com/dock-2/specs",
+        "note": "Linear approximation (70% / 32 min)."
+      }
+    }
+  },
+  "fixedWing": {
+    "label": {
+      "value": "Long-range fixed-wing (VTOL)",
+      "unit": "",
+      "source": "Generic profile.",
+      "note": "Vertical take-off, transitions to wing-borne flight; orbits the scene instead of hovering."
+    },
+    "cruiseSpeedMs": {
+      "value": 40,
+      "unit": "m/s",
+      "source": "Vendor DFR page: fixed-wing layer 'up to 100 mph' (44.7 m/s), https://www.skydio.com/solutions/dfr",
+      "note": "Cruise (~90 mph) set a little under the quoted maximum."
+    },
+    "launchS": {
+      "value": 45,
+      "unit": "s",
+      "source": "Assumption.",
+      "note": "Hub open, vertical take-off and transition to forward flight; slower than a multirotor dock launch."
+    },
+    "cruiseAltitudeFt": {
+      "value": 400,
+      "unit": "ft AGL",
+      "source": "Assumption (Part 107 ceiling).",
+      "note": ""
+    },
+    "climbRateMs": {
+      "value": 5,
+      "unit": "m/s",
+      "source": "Assumption.",
+      "note": ""
+    },
+    "landingS": {
+      "value": 60,
+      "unit": "s",
+      "source": "Assumption.",
+      "note": "Transition back to hover, descent and landing in the hub."
+    },
+    "enduranceMin": {
+      "value": 120,
+      "unit": "min",
+      "source": "Vendor DFR page: '2 hours or more' endurance, https://www.skydio.com/solutions/dfr",
+      "note": ""
+    },
+    "reservePct": {
+      "value": 20,
+      "unit": "%",
+      "source": "Assumption, same as multirotor.",
+      "note": ""
+    },
+    "minLaunchPct": {
+      "value": 50,
+      "unit": "%",
+      "source": "Assumption, same as multirotor.",
+      "note": ""
+    },
+    "chargeRatePctPerMin": {
+      "value": 1.2,
+      "unit": "%/min",
+      "source": "Assumption.",
+      "note": "Larger pack: about 65 min from 20% to full."
+    },
+    "responseRadiusKm": {
+      "value": 48,
+      "unit": "km",
+      "source": "Vendor DFR page: '30-mile radius', https://www.skydio.com/solutions/dfr",
+      "note": "Covers all of San Francisco from any hub in the city."
+    },
+    "orbitRadiusM": {
+      "value": 150,
+      "unit": "m",
+      "source": "Assumption (replay animation only).",
+      "note": ""
+    }
+  },
+  "operators": {
+    "count": {
+      "value": 1,
+      "unit": "people",
+      "source": "Assumption.",
+      "note": "Remote operators on shift."
+    },
+    "maxConcurrentDrones": {
+      "value": 1,
+      "unit": "drones per operator",
+      "source": "Assumption.",
+      "note": "Active missions one operator can supervise at once (launch until the drone leaves the scene)."
+    }
+  }
+}

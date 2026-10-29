@@ -1,0 +1,30 @@
+{
+  "name": "dfr-sandbox-sf",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Drone-as-first-responder simulator: work a shift as a remote drone operator on real San Francisco 911 calls.",
+  "scripts": {
+    "start": "vite --open",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "data": "python3 -I pipeline/build_data.py",
+    "docs": "tsx scripts/docs.ts",
+    "bot": "tsx scripts/operator-bot.ts"
+  },
+  "dependencies": {
+    "maplibre-gl": "4.7.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.9.0",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.4",
+    "tsx": "4.19.2",
+    "typescript": "5.6.3",
+    "vite": "5.4.11"
+  }
+}
