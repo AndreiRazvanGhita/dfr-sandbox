@@ -17,12 +17,12 @@ type Manifest = { months: { month: string; days: { date: string; calls: number }
 let allDaysPromise: Promise<{ calls: Call[]; days: number }> | null = null;
 function loadAllDays() {
   allDaysPromise ??= (async () => {
-    const manifest = (await (await fetch("/data/manifest.json")).json()) as Manifest;
+    const manifest = (await (await fetch(`${import.meta.env.BASE_URL}data/manifest.json`)).json()) as Manifest;
     const incomplete = markIncomplete(manifest.months.flatMap((m) => m.days));
     const calls: Call[] = [];
     let days = 0;
     for (const m of manifest.months) {
-      const file = (await (await fetch(`/data/calls-${m.month}.json`)).json()) as CallsMonthFile;
+      const file = (await (await fetch(`${import.meta.env.BASE_URL}data/calls-${m.month}.json`)).json()) as CallsMonthFile;
       for (const d of file.days) {
         if (incomplete.has(d)) continue;
         days++;

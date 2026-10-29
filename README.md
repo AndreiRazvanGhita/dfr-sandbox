@@ -13,6 +13,8 @@ officer behaviour, connectivity, privacy policy and cost (see [Limitations](#lim
 
 ---
 
+**Play it:** <https://andreirazvanghita.github.io/dfr-sandbox/>
+
 ## Quick start
 
 ```bash
@@ -132,6 +134,9 @@ npm run bot -- citywide 2   # play a shift with the auto-dispatch rule (fleet, c
 npm run docs       # writes docs/assumptions.md from config/assumptions.json
 npm run build      # typecheck and production build
 ```
+
+Every push to `main` builds the app and publishes it to GitHub Pages (`.github/workflows/pages.yml`). The build uses relative
+paths, so `dist/` also works from any other static host or subfolder.
 
 ## Project layout
 
