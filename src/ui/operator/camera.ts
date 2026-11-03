@@ -23,14 +23,14 @@ function zoomToFit(distM: number, lat: number, viewH: number, frac = 0.45): numb
   return Math.max(12.5, Math.min(16.3, z));
 }
 
-/** The shot for a target: a waiting call close up, a drone in flight framed with its destination
- * (chase view, flying up the screen), or a slow orbit once the drone is on scene. */
-export function shotFor(target: CamTarget, s: OpState, viewH: number): Shot | null {
+/** The shot for a target: a waiting call close up (with the officer car on its way, when there is one), a drone in
+ * flight framed with its destination (chase view, flying up the screen), or a slow orbit once the drone is on scene. */
+export function shotFor(target: CamTarget, s: OpState, viewH: number, car: [number, number] | null = null): Shot | null {
   if (target.kind === "overview") return OVERVIEW;
   if (target.kind === "drone") {
     const d = s.drones.find((x) => x.id === target.id);
     if (!d) return null;
-    if (d.callId != null) return shotFor({ kind: "call", id: d.callId }, s, viewH);
+    if (d.callId != null) return shotFor({ kind: "call", id: d.callId }, s, viewH, car);
     const pose = dronePose(d);
     return { center: pose.pos, zoom: d.phase === "docked" ? 15.2 : 15.6, pitch: 50, bearing: d.phase === "docked" ? 0 : pose.heading };
   }
@@ -48,6 +48,12 @@ export function shotFor(target: CamTarget, s: OpState, viewH: number): Shot | nu
       pitch: 52,
       bearing: dist > 120 ? bearing(pos, scene) : "orbit",
     };
+  }
+  if (car) {
+    const dist = haversineM(car[0], car[1], scene[0], scene[1]);
+    if (dist > 150 && dist < 5000) {
+      return { center: [(car[0] + scene[0]) / 2, (car[1] + scene[1]) / 2], zoom: Math.min(15.4, zoomToFit(dist, scene[1], viewH, 0.6)), pitch: 45, bearing: "orbit" };
+    }
   }
   return { center: scene, zoom: 15.4, pitch: 45, bearing: "orbit" };
 }

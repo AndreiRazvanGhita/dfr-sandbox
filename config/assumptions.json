@@ -24,6 +24,12 @@
       "unit": "",
       "source": "DataSF dataset description (Feb 2025 revision note: consistent geo-masked intersections applied to all history)",
       "note": "Error is at most about half a block (~50-100 m), small next to 1-3 km flights. Calls with no location and sensitive calls (location withheld) are excluded and counted."
+    },
+    "streetsDataset": {
+      "value": "3psu-pn9h",
+      "unit": "Socrata id",
+      "source": "DataSF, Streets – Active and Retired, https://data.sf.gov/d/3psu-pn9h (PDDL)",
+      "note": "Active street centerlines with from/to intersection ids and one-way direction; drivable layers only (city streets, freeways, park and Presidio roads, the islands). Used to route officer cars on the map."
     }
   },
   "dispatch": {
@@ -244,6 +250,20 @@
       "unit": "drones per operator",
       "source": "Assumption.",
       "note": "Active missions one operator can supervise at once (launch until the drone leaves the scene)."
+    }
+  },
+  "officers": {
+    "routeOrigin": {
+      "value": "patrol position 0.6-2 km from the call",
+      "unit": "",
+      "source": "Assumption.",
+      "note": "The record has no unit locations, so each officer car starts from a random street corner 0.6-2 km from the call, seeded per call. Only the timing is real: the car appears at the recorded dispatch time and arrives at the recorded on-scene time."
+    },
+    "driveSpeedKmh": {
+      "value": 30,
+      "unit": "km/h",
+      "source": "Assumption, typical urban patrol speed.",
+      "note": "The car keeps moving at about this speed from dispatch to arrival. When the real trip time is longer than the direct route takes, it first cruises nearby streets (staying within about 1.8 km of the call), then heads in; when shorter, it starts partway along the route."
     }
   }
 }

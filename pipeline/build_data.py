@@ -24,6 +24,7 @@ ASSUMPTIONS = json.loads((ROOT / "config" / "assumptions.json").read_text())
 API = "https://data.sf.gov/resource"
 CALLS_ID = ASSUMPTIONS["data"]["callsDataset"]["value"]
 DISTRICTS_ID = ASSUMPTIONS["data"]["districtsDataset"]["value"]
+STREETS_ID = ASSUMPTIONS["data"]["streetsDataset"]["value"]
 CALL_FILTER = ASSUMPTIONS["data"]["callFilter"]["value"]
 
 CALL_FIELDS = [
@@ -234,6 +235,52 @@ def build_month(month, district_of, district_names, refresh):
     return {"month": month, "days": [{"date": d, "calls": n} for d, n in zip(days, per_day)]}
 
 
+# ---------- streets (for officer cars on the map) ----------
+
+DRIVABLE = ("STREETS", "FREEWAYS", "UPROW", "PARKS", "PARKS_NPS_PRESIDIO", "PARKS_NPS_FTMASON",
+            "STREETS_HUNTERSP", "STREETS_TI", "STREETS_YBI")
+
+
+def build_streets(refresh):
+    """Street graph: nodes are intersections, edges are centerline segments with their shape and one-way flag."""
+    layers = ",".join(f"'{l}'" for l in DRIVABLE)
+    rows, offset = [], 0
+    while True:
+        params = {"$select": "cnn,f_node_cnn,t_node_cnn,oneway,line", "$where": f"active = true AND layer in ({layers})",
+                  "$order": "cnn", "$limit": PAGE, "$offset": offset}
+        page = fetch_json(soql_url(STREETS_ID, params), f"streets-{offset}.json", refresh)
+        rows.extend(page)
+        if len(page) < PAGE:
+            break
+        offset += PAGE
+    node_idx, nodes, edges = {}, [], []
+
+    def node(cnn, pt):
+        if cnn not in node_idx:
+            node_idx[cnn] = len(nodes)
+            nodes.append([round(pt[0], 5), round(pt[1], 5)])
+        return node_idx[cnn]
+
+    for r in rows:
+        line = r.get("line")
+        if not line or not r.get("f_node_cnn") or not r.get("t_node_cnn"):
+            continue
+        pts = line["coordinates"]
+        if line["type"] == "MultiLineString":
+            pts = [p for part in pts for p in part]
+        if len(pts) < 2:
+            continue
+        a, b = node(r["f_node_cnn"], pts[0]), node(r["t_node_cnn"], pts[-1])
+        if a == b:
+            continue
+        way = {"F": 1, "T": -1}.get(r.get("oneway"), 0)  # 1: from->to only, -1: to->from only, 0: both
+        mid = [c for p in pts[1:-1] for c in (round(p[0], 5), round(p[1], 5))]
+        edges.append([a, b, way, mid])
+    out = {"source": f"DataSF {STREETS_ID} (PDDL), active drivable centerlines", "nodes": nodes, "edges": edges}
+    (OUT / "streets.json").write_text(json.dumps(out, separators=(",", ":")))
+    print(f"streets: {len(nodes)} intersections, {len(edges)} segments")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--months", nargs="+", default=["2026-08", "2026-10"])
@@ -244,6 +291,7 @@ def main():
     feats = build_districts(args.refresh)
     district_names = [f["properties"]["district"] for f in feats]
     district_of = make_district_lookup(feats)
+    build_streets(args.refresh)
 
     manifest_path = OUT / "manifest.json"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {"months": []}

@@ -2,14 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FeatureCollection } from "geojson";
 import { callsForDay, markIncomplete } from "../../sim/data";
 import { eligibilityTest } from "../../sim/scenario";
-import { candidates, createOperator, decide, launch, recall, runAuto, score, skip, step, type OpScore, type OpState } from "../../sim/operator";
+import { candidates, createOperator, decide, launch, recall, runAuto, score, skip, step, type OpReveal, type OpScore, type OpState } from "../../sim/operator";
 import { PRESETS, presetById } from "../../sim/presets";
+import type { StreetGraph } from "../../sim/streets";
 import type { Call, CallsMonthFile } from "../../sim/types";
 import { loadBasemap, saveBasemap, type BasemapKind } from "../basemap";
-import { BasemapToggle, CallCard, CallList, EndScreen, FleetStrip, openCalls, StartScreen, TopBar } from "./Hud";
+import { BasemapToggle, CallCard, CallList, EndScreen, FleetStrip, needsDecision, openCalls, StartScreen, TopBar } from "./Hud";
 import type { CamMode, CamTarget } from "./camera";
 import { OperatorMap } from "./OperatorMap";
-import { isMuted, setMuted, sfx, unlockAudio } from "./sfx";
 
 type Manifest = { months: { month: string; days: { date: string; calls: number }[] }[] };
 
@@ -42,7 +42,7 @@ function eventTarget(e: { callId?: number; text: string }): CamTarget | null {
   return m ? { kind: "drone", id: m[1] } : null;
 }
 
-export function OperatorView({ districts }: { districts: FeatureCollection | null }) {
+export function OperatorView({ districts, streets }: { districts: FeatureCollection | null; streets: StreetGraph | null }) {
   const [all, setAll] = useState<{ calls: Call[]; days: number } | null>(null);
   const [fleet, setFleet] = useState(() => {
     const id = new URLSearchParams(window.location.search).get("preset");
@@ -55,9 +55,12 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
   const [pauseOnRead, setPauseOnRead] = useState(true);
   const [playing, setPlaying] = useState(false);
   const [selected, setSelected] = useState<number | null>(null);
+  const selectedRef = useRef<number | null>(null); // for the simulation loop, which outlives renders
+  selectedRef.current = selected;
   const [toast, setToast] = useState<string | null>(null);
-  const [verdict, setVerdict] = useState<{ text: string; kind: "good" | "bad" | "neutral" } | null>(null);
-  const [muted, setMutedState] = useState(isMuted);
+  const [reveal, setReveal] = useState<(OpReveal & { label: string }) | null>(null);
+  const [stamp, setStamp] = useState<{ text: string; key: number } | null>(null);
+  const lastReveal = useRef(0);
   const [ticker, setTicker] = useState<{ text: string; target: CamTarget | null } | null>(null);
   const [camMode, setCamMode] = useState<CamMode>("auto");
   // Short-lived focus from the director (an alert), on top of the selected call.
@@ -84,10 +87,15 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
     return () => clearTimeout(id);
   }, [toast]);
   useEffect(() => {
-    if (!verdict) return;
-    const id = window.setTimeout(() => setVerdict(null), 4200);
+    if (!reveal) return;
+    const id = window.setTimeout(() => setReveal(null), 5200);
     return () => clearTimeout(id);
-  }, [verdict]);
+  }, [reveal]);
+  useEffect(() => {
+    if (!stamp) return;
+    const id = window.setTimeout(() => setStamp(null), 2600);
+    return () => clearTimeout(id);
+  }, [stamp]);
   useEffect(() => {
     if (!ticker) return;
     const id = window.setTimeout(() => setTicker(null), 4500);
@@ -100,7 +108,6 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
 
   const start = () => {
     if (!all || pool.length === 0) return;
-    unlockAudio();
     simRef.current = createOperator({
       scenario,
       pool,
@@ -112,6 +119,9 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
     });
     lastEvent.current = simRef.current.events.length;
     lastImpact.current = 0;
+    lastReveal.current = 0;
+    setReveal(null);
+    setStamp(null);
     focusOverride.current = null;
     setCamMode("auto");
     setSelected(null);
@@ -136,6 +146,17 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
     window.setTimeout(() => setTick((n) => n + 1), holdMs + 50); // return the camera even while paused
   };
 
+  /** Show the newest "what officers actually found" card. */
+  const checkReveals = (s: OpState) => {
+    const fresh = s.reveals.slice(lastReveal.current);
+    lastReveal.current = s.reveals.length;
+    const r = fresh.at(-1);
+    if (!r) return;
+    const c = s.calls.find((x) => x.id === r.callId);
+    setReveal({ ...r, label: c ? `${c.src.typeODesc} · ${c.src.district ?? ""}` : "" });
+  };
+  const deciding = useRef(false);
+
   // Simulation loop: advance by real elapsed time x speed; React re-renders about 8 times a second.
   useEffect(() => {
     if (!playing) return;
@@ -145,10 +166,11 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
     const loop = (now: number) => {
       const s = simRef.current;
       if (!s) return;
-      step(s, Math.min(0.25, (now - last) / 1000) * speed);
+      // The decision moment: time slows while a scene read waits on you.
+      step(s, Math.min(0.25, (now - last) / 1000) * speed * (deciding.current ? 0.25 : 1));
       last = now;
 
-      // Surface notable events briefly with a sound; select new calls when nothing is selected.
+      // Surface notable events briefly and let them pull the camera.
       const fresh = s.events.slice(lastEvent.current);
       lastEvent.current = s.events.length;
       const notable = fresh.filter((e) => e.kind !== "call" && e.kind !== "decision").at(-1);
@@ -156,28 +178,39 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
       for (const e of fresh) {
         const prio = s.calls.find((c) => c.id === e.callId)?.src.prioO;
         if (e.kind === "call") {
-          sfx(prio === "A" ? "callA" : "call");
           if (e.callId) pullFocus({ kind: "call", id: e.callId }, prio === "A" ? 80 : prio === "B" ? 50 : 30, prio === "A" ? 4500 : 3200);
         } else if (e.text.startsWith("Scene read") && e.callId) {
           pullFocus({ kind: "call", id: e.callId }, 100, 7000);
         } else if (e.text.includes(" on scene at ")) {
-          sfx("arrive");
           if (e.callId) pullFocus({ kind: "call", id: e.callId }, 70, 4000);
         } else if (e.kind === "warn" && !e.text.startsWith("Shift")) {
-          sfx("warn");
           const t = eventTarget(e);
           if (t) pullFocus(t, 40, 3000);
         }
       }
       // Impact moments (eyes on sooner, officer freed) get a quick look too.
-      for (const imp of s.impacts.slice(lastImpact.current)) pullFocus({ kind: "call", id: imp.callId }, 60, 3200);
-      lastImpact.current = s.impacts.length;
-      const newCall = fresh.filter((e) => e.kind === "call").at(-1);
-      if (newCall?.callId) setSelected((cur) => cur ?? newCall.callId!);
+      for (const imp of s.impacts.filter((i) => i.t > lastImpact.current)) {
+        pullFocus({ kind: "call", id: imp.callId }, 60, 3200);
+        if (imp.kind === "sooner") setStamp((cur) => (cur && imp.callId !== selectedRef.current ? cur : { text: imp.text.replace(/^Eyes on /, ""), key: imp.t }));
+      }
+      lastImpact.current = s.impacts.at(-1)?.t ?? lastImpact.current;
+      checkReveals(s);
+      // Stay on the selected call while it waits on a decision. Otherwise, when it closes or a new call or
+      // scene read comes in, move to the most urgent call that needs one (scene reads first, then by priority).
+      const cur = s.calls.find((c) => c.id === selectedRef.current);
+      const pending = cur != null && needsDecision(cur);
+      const arrivals = fresh.some((e) => e.kind === "call" || e.text.startsWith("Scene read"));
+      if (!pending && (arrivals || !cur || cur.status === "closed")) {
+        const next = openCalls(s).find(needsDecision);
+        if (next && next.id !== selectedRef.current) {
+          selectedRef.current = next.id;
+          focusOverride.current = null;
+          setSelected(next.id);
+        }
+      }
 
       const read = fresh.find((e) => e.text.startsWith("Scene read"));
-      if (pauseOnRead && read?.callId) {
-        setSelected(read.callId);
+      if (pauseOnRead && read?.callId && read.callId === selectedRef.current) {
         setPlaying(false);
         setTick((n) => n + 1);
         return;
@@ -199,29 +232,24 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
   const act = useCallback((fn: (s: OpState) => string | null) => {
     const s = simRef.current;
     if (!s) return;
-    const before = s.events.length;
     const err = fn(s);
     if (err) setToast(err);
-    // Immediate feedback for launches and clearance decisions.
-    for (const e of s.events.slice(before)) {
-      if (e.text.includes(" → ")) sfx("launch");
-      if (e.kind === "decision" && e.text.startsWith("Cleared")) {
-        const kind = e.text.includes("found nothing to act on") ? "good" : e.text.includes("Officers actually") ? "bad" : "neutral";
-        const detail = e.text.replace(/^Cleared .*? without an officer\. /, "");
-        setVerdict({ kind, text: kind === "good" ? "Good call: officers later found nothing to act on." : detail });
-        sfx(kind === "bad" ? "bad" : "good");
-      }
-    }
+    checkReveals(s);
     refresh();
   }, []);
 
   const call = sim?.calls.find((c) => c.id === selected) ?? null;
+  const isDeciding = !!call && call.status === "onscene" && !!call.report && !call.decision;
+  deciding.current = isDeciding;
   const closeIfDone = () => {
     // After acting on a call, move on to the next one that needs attention.
     const s = simRef.current;
     if (!s) return;
-    const next = openCalls(s).find((c) => c.id !== selected && (c.status === "waiting" || (c.report && !c.decision)));
-    setSelected(next?.id ?? null);
+    // With nothing else waiting, stay on this call to watch the race play out.
+    const next = openCalls(s).find((c) => c.id !== selected && needsDecision(c));
+    const stillOpen = s.calls.some((c) => c.id === selected && c.status !== "closed");
+    focusOverride.current = null;
+    setSelected(next?.id ?? (stillOpen ? selected : null));
   };
 
   const launchBest = () =>
@@ -248,8 +276,9 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
         closeIfDone();
       } else if ((k === "c" || k === "o") && selected) {
         const c = s.calls.find((x) => x.id === selected);
+        const awaiting = !!c?.report && !c.decision; // read before deciding: decide() sets c.decision
         act((st) => decide(st, selected, k === "c" ? "clear" : "officer"));
-        if (c?.report && !c.decision) {
+        if (awaiting) {
           closeIfDone();
           setPlaying(true);
         }
@@ -286,15 +315,19 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
   if (sim && !sim.finished && camMode !== "free") {
     const ov = focusOverride.current && focusOverride.current.until > performance.now() ? focusOverride.current : null;
     const selOpen = call && call.status !== "closed" ? ({ kind: "call", id: call.id } as CamTarget) : null;
-    camTarget = (camMode === "auto" && ov?.target) || selOpen || ov?.target || { kind: "overview" };
+    // A call waiting on your decision holds the camera: alerts only show in the ticker until you decide.
+    // Things you click yourself (a drone in the fleet strip, the ticker) still take it for a moment.
+    const holding = call != null && needsDecision(call) && !(ov && ov.prio >= 90);
+    camTarget = holding ? selOpen : (camMode === "auto" && ov?.target) || selOpen || ov?.target || { kind: "overview" };
   }
   const ended = sim?.finished && !menu;
 
   return (
-    <div className={sim && !sim.finished && !playing && !menu ? "sim-app is-paused" : "sim-app"}>
+    <div className={["sim-app", sim && !sim.finished && !playing && !menu ? "is-paused" : "", isDeciding && !menu ? "deciding" : ""].join(" ")}>
       <OperatorMap
         sim={sim}
         districts={districts}
+        streets={streets}
         docks={docks}
         selected={selected}
         basemap={basemap}
@@ -321,16 +354,11 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
               finish(sim);
             }}
             basemapToggle={<BasemapToggle value={basemap} onChange={setBasemap} />}
-            muted={muted}
             helped={score(sim).droneFirst}
             camMode={camMode}
             onCamMode={(m) => {
               focusOverride.current = null;
               setCamMode(m);
-            }}
-            onMute={() => {
-              setMuted(!muted);
-              setMutedState(!muted);
             }}
           />
           <CallList
@@ -378,7 +406,7 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
             }}
           />
           {!playing && <div className="hud paused">Paused · Space to resume</div>}
-          {ticker && !verdict && (
+          {ticker && !reveal && !stamp && (
             <button
               className="hud ticker"
               onClick={() => {
@@ -396,10 +424,25 @@ export function OperatorView({ districts }: { districts: FeatureCollection | nul
               {ticker.text}
             </button>
           )}
-          {verdict && (
-            <div className={`hud verdict ${verdict.kind}`} role="status">
-              {verdict.kind === "good" ? "✓ " : verdict.kind === "bad" ? "✗ " : "? "}
-              {verdict.text}
+          {stamp && !reveal && (
+            <div key={stamp.key} className="stamp" role="status">
+              <b>EYES ON SCENE</b>
+              <span>{stamp.text}</span>
+            </div>
+          )}
+          {reveal && (
+            <div key={`${reveal.callId}-${reveal.t}`} className={`hud reveal ${reveal.verdict}`} role="status">
+              <div className="reveal-inner">
+                <span className="reveal-kicker">
+                  {reveal.decision === "clear" ? "You cleared it" : "You kept the officer"} · {reveal.label}
+                </span>
+                <span className="reveal-q">What officers actually found</span>
+                <b className="reveal-found">{reveal.found}</b>
+                <span className="reveal-text">
+                  {reveal.verdict === "right" ? "✓ " : reveal.verdict === "wrong" ? "✗ " : ""}
+                  {reveal.text}
+                </span>
+              </div>
             </div>
           )}
         </>

@@ -11,6 +11,7 @@ the app's info tooltips show the same source text. "Assumption." marks a judgeme
 | callFilter | agency = 'Police' AND onview_flag = 'N' | SoQL | Dataset explainer, <https://sfdigitalservices.gitbook.io/dataset-explainers/law-enforcement-dispatched-calls-for-service> | 911-originated police calls only. On-view calls (officer already present), HSOC, MTA, Sheriff and HEART are excluded because a drone cannot beat an officer who initiated the call. |
 | districtsDataset | d4vc-q76h | Socrata id | DataSF, Current Police Districts, <https://data.sf.gov/d/d4vc-q76h> (PDDL) | New SFPD boundaries effective 2026-10-01. Every call is re-assigned to these boundaries by point-in-polygon so historical days can be replayed under the new districts. |
 | locationMasking | nearest intersection |  | DataSF dataset description (Feb 2025 revision note: consistent geo-masked intersections applied to all history) | Error is at most about half a block (~50-100 m), small next to 1-3 km flights. Calls with no location and sensitive calls (location withheld) are excluded and counted. |
+| streetsDataset | 3psu-pn9h | Socrata id | DataSF, Streets – Active and Retired, <https://data.sf.gov/d/3psu-pn9h> (PDDL) | Active street centerlines with from/to intersection ids and one-way direction; drivable layers only (city streets, freeways, park and Presidio roads, the islands). Used to route officer cars on the map. |
 
 ## dispatch
 
@@ -65,3 +66,10 @@ the app's info tooltips show the same source text. "Assumption." marks a judgeme
 |---|---|---|---|---|
 | count | 1 | people | Assumption. | Remote operators on shift. |
 | maxConcurrentDrones | 1 | drones per operator | Assumption. | Active missions one operator can supervise at once (launch until the drone leaves the scene). |
+
+## officers
+
+| Parameter | Value | Unit | Source | Note |
+|---|---|---|---|---|
+| routeOrigin | patrol position 0.6-2 km from the call |  | Assumption. | The record has no unit locations, so each officer car starts from a random street corner 0.6-2 km from the call, seeded per call. Only the timing is real: the car appears at the recorded dispatch time and arrives at the recorded on-scene time. |
+| driveSpeedKmh | 30 | km/h | Assumption, typical urban patrol speed. | The car keeps moving at about this speed from dispatch to arrival. When the real trip time is longer than the direct route takes, it first cruises nearby streets (staying within about 1.8 km of the call), then heads in; when shorter, it starts partway along the route. |

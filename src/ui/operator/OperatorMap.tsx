@@ -5,13 +5,16 @@ import { candidates, type OpCall, type OpState } from "../../sim/operator";
 import { basemapStyle, type BasemapKind } from "../basemap";
 import { currentMode } from "../theme";
 import { OVERVIEW, shotFor, stepCamera, type CamTarget } from "./camera";
-import { officerIcon, planeIcon, quadIcon } from "./icons";
+import { officerRoute, pointAt, remainder, type Path, type StreetGraph } from "../../sim/streets";
+import { officerIcon, planeIcon, policeCarIcon, quadIcon } from "./icons";
 import { dronePose } from "./pose";
 
 interface Props {
   sim: OpState | null;
   districts: FeatureCollection | null;
   docks: { id: string; name: string; lon: number; lat: number }[];
+  /** Street graph for officer cars; null until loaded. */
+  streets: StreetGraph | null;
   selected: number | null;
   basemap: BasemapKind;
   /** Start/end screens are up: slowly orbit the city behind them. */
@@ -40,11 +43,33 @@ function callState(c: OpCall, t: number): string | null {
   return "officer";
 }
 
+/** Patrol driving speed; the car keeps moving at about this speed from dispatch to arrival. */
+const DRIVE_MS = 30 / 3.6;
+/** When a call has no recorded dispatch time, the car shows for this long before it arrives. */
+const NO_DISPATCH_S = 300;
+
+interface OfficerDrive {
+  path: Path;
+  start: number; // distance along the path at t0
+  approach: number; // where the head-in to the scene begins; before it the car is cruising nearby streets
+  t0: number;
+  t1: number; // recorded on-scene time
+}
+
+/** Where an officer car is at time t, or null when it is not on the road. The timing is real (recorded dispatch to
+ * recorded on-scene); the start position and route are illustrative, since unit locations are not public. */
+function carAt(c: OpCall, drive: OfficerDrive, t: number): { pos: [number, number]; heading: number; along: number } | null {
+  if (c.status === "closed" || c.officerArrived || t < drive.t0 || t >= drive.t1) return null;
+  const along = drive.start + ((drive.path.len - drive.start) * (t - drive.t0)) / (drive.t1 - drive.t0);
+  return { ...pointAt(drive.path, along), along };
+}
+
 function addLayers(map: MlMap) {
-  for (const id of ["districts", "eta", "calls", "drones", "trails", "paths"]) if (!map.getSource(id)) map.addSource(id, { type: "geojson", data: EMPTY });
+  for (const id of ["districts", "eta", "calls", "drones", "trails", "paths", "cars", "car-route"]) if (!map.getSource(id)) map.addSource(id, { type: "geojson", data: EMPTY });
   if (!map.hasImage("quad")) map.addImage("quad", quadIcon(), { pixelRatio: 2 });
   if (!map.hasImage("plane")) map.addImage("plane", planeIcon(), { pixelRatio: 2 });
   if (!map.hasImage("officer")) map.addImage("officer", officerIcon(), { pixelRatio: 2 });
+  if (!map.hasImage("police-car")) map.addImage("police-car", policeCarIcon(), { pixelRatio: 2 });
 
   map.addLayer({ id: "district-lines", type: "line", source: "districts", paint: { "line-color": "#ffffff", "line-width": 1, "line-opacity": 0.22 } });
   map.addLayer({
@@ -63,6 +88,14 @@ function addLayers(map: MlMap) {
     source: "eta",
     layout: { "symbol-placement": "line-center", "text-field": ["get", "label"], "text-font": ["Noto Sans Bold"], "text-size": 12 },
     paint: { "text-color": "#ffffff", "text-halo-color": "rgba(0,0,0,0.9)", "text-halo-width": 2 },
+  });
+  // The officer's route still to drive, for the selected call.
+  map.addLayer({
+    id: "car-route",
+    type: "line",
+    source: "car-route",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#ff9d47", "line-width": 3, "line-opacity": 0.75, "line-dasharray": [1.5, 1.5] },
   });
   map.addLayer({ id: "paths", type: "line", source: "paths", paint: { "line-color": BLUE, "line-width": 1.5, "line-opacity": 0.8, "line-dasharray": [1, 2] } });
   map.addLayer({
@@ -162,6 +195,26 @@ function addLayers(map: MlMap) {
       "icon-size": ["interpolate", ["linear"], ["zoom"], 11, 0.75, 15, 1.1],
     },
   });
+  // Officer cars on their street routes, with a countdown on the selected call's car.
+  map.addLayer({
+    id: "cars",
+    type: "symbol",
+    source: "cars",
+    layout: {
+      "icon-image": "police-car",
+      "icon-rotate": ["get", "heading"],
+      "icon-rotation-alignment": "map",
+      "icon-allow-overlap": true,
+      "icon-ignore-placement": true,
+      "icon-size": ["interpolate", ["linear"], ["zoom"], 11, 0.7, 15, 1.25, 17, 1.6],
+      "text-field": ["get", "label"],
+      "text-font": ["Noto Sans Bold"],
+      "text-size": 11.5,
+      "text-offset": [0, 1.9],
+      "text-allow-overlap": true,
+    },
+    paint: { "icon-opacity": ["case", ["get", "selected"], 1, 0.85], "text-color": "#ffb36b", "text-halo-color": "rgba(0,0,0,0.9)", "text-halo-width": 2 },
+  });
 }
 
 function dockHtml(name: string, sim: OpState | null, dockId: string): string {
@@ -184,13 +237,15 @@ function lighting(t: number): { bright: number; sat: number; hue: number } {
   return { bright: 0.42 + 0.58 * day, sat: -0.45 + 0.35 * day, hue: (1 - day) * 12 };
 }
 
-export function OperatorMap({ sim, districts, docks, selected, basemap, idle, camTarget, onUserCamera, onSelect, onDockClick }: Props) {
+export function OperatorMap({ sim, districts, docks, streets, selected, basemap, idle, camTarget, onUserCamera, onSelect, onDockClick }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MlMap | null>(null);
   const markers = useRef(new Map<string, Marker>());
   const trails = useRef(new Map<string, [number, number][]>());
-  const latest = useRef({ sim, selected, onSelect, onDockClick, districts, docks, idle, camTarget, onUserCamera });
-  latest.current = { sim, selected, onSelect, onDockClick, districts, docks, idle, camTarget, onUserCamera };
+  const latest = useRef({ sim, selected, onSelect, onDockClick, districts, docks, streets, idle, camTarget, onUserCamera });
+  latest.current = { sim, selected, onSelect, onDockClick, districts, docks, streets, idle, camTarget, onUserCamera };
+  const routes = useRef(new Map<number, OfficerDrive>()); // officer drive per call, computed once
+  const selCar = useRef<[number, number] | null>(null); // the selected call's officer car, for the camera
   const pops = useRef(new Map<string, Marker>());
   const lastLight = useRef(0);
   const basemapRef = useRef(basemap);
@@ -201,7 +256,7 @@ export function OperatorMap({ sim, districts, docks, selected, basemap, idle, ca
     const { sim, selected } = latest.current;
     if (!map || !map.getSource("calls")) return;
     if (!sim) {
-      for (const id of ["calls", "drones", "eta", "trails", "paths"]) (map.getSource(id) as GeoJSONSource).setData(EMPTY);
+      for (const id of ["calls", "drones", "eta", "trails", "paths", "cars", "car-route"]) (map.getSource(id) as GeoJSONSource).setData(EMPTY);
       return;
     }
     if (sim.impacts.length === 0 && pops.current.size) pops.current.clear();
@@ -277,6 +332,47 @@ export function OperatorMap({ sim, districts, docks, selected, basemap, idle, ca
         });
     }
     (map.getSource("eta") as GeoJSONSource).setData({ type: "FeatureCollection", features: eta });
+
+    // Officer cars: every dispatched officer still on the way drives its street route.
+    const cars: Feature<Point>[] = [];
+    selCar.current = null;
+    let selRoute: [number, number][] | null = null;
+    const { streets } = latest.current;
+    if (streets) {
+      for (const c of sim.calls) {
+        if (c.status === "closed" || c.officerArrived || c.officerAt == null) {
+          routes.current.delete(c.id);
+          continue;
+        }
+        if (c.visibleAt > t || (c.dispatchAt != null && c.dispatchAt > t)) continue;
+        let drive = routes.current.get(c.id);
+        if (!drive) {
+          const t0 = c.dispatchAt ?? c.officerAt - NO_DISPATCH_S;
+          const r = officerRoute(streets, [c.src.lon!, c.src.lat!], c.officerAt - t0, sim.cfg.seed + c.id * 7919, DRIVE_MS);
+          drive = { ...r, t0, t1: c.officerAt };
+          routes.current.set(c.id, drive);
+        }
+        const car = carAt(c, drive, t);
+        if (!car) continue;
+        const isSel = c.id === selected;
+        const left = Math.max(0, c.officerAt - t);
+        cars.push({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: car.pos },
+          properties: { heading: car.heading, selected: isSel, label: isSel ? `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, "0")}` : "" },
+        });
+        if (isSel) {
+          // Draw the way in only once the car is heading to the scene, not its patrol loop before that.
+          if (car.along >= drive.approach) selRoute = remainder(drive.path, car.along);
+          selCar.current = car.pos;
+        }
+      }
+    }
+    (map.getSource("cars") as GeoJSONSource).setData({ type: "FeatureCollection", features: cars });
+    (map.getSource("car-route") as GeoJSONSource).setData(
+      selRoute ? { type: "Feature", geometry: { type: "LineString", coordinates: selRoute }, properties: {} } : EMPTY,
+    );
+
 
     // Floating impact markers at the call, one per impact, removed when their animation ends.
     for (const imp of sim.impacts) {
@@ -405,8 +501,10 @@ export function OperatorMap({ sim, districts, docks, selected, basemap, idle, ca
             map.setPadding(PLAY_PADDING);
             padded = true;
           }
+          // The officer car is only known for the selected call.
+          const carFor = (t: CamTarget) => (t.kind === "call" && t.id === latest.current.selected ? selCar.current : null);
           if (camTarget && sim && now > userUntil && !pressed) {
-            const shot = shotFor(camTarget, sim, map.getContainer().clientHeight - 180) ?? OVERVIEW;
+            const shot = shotFor(camTarget, sim, map.getContainer().clientHeight - 180, carFor(camTarget)) ?? OVERVIEW;
             const c = map.getCenter();
             const next = stepCamera({ lng: c.lng, lat: c.lat, zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing() }, shot, dt);
             map.jumpTo(next);

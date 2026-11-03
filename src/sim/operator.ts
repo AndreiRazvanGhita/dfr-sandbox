@@ -33,6 +33,7 @@ export interface OpCall {
   src: Call;
   t: number; // 911 call received
   visibleAt: number; // entered in CAD: when the operator can see it
+  dispatchAt: number | null; // real officer dispatch, re-timed
   officerAt: number | null; // real first officer on scene, re-timed
   status: CallStatus;
   droneId: string | null;
@@ -83,6 +84,16 @@ export interface OpImpact {
   lat: number;
 }
 
+/** What officers actually found, shown after a decision: right away for a clearance, on the officer's arrival otherwise. */
+export interface OpReveal {
+  t: number;
+  callId: number;
+  decision: "clear" | "officer";
+  found: string; // "Gone on arrival", "Made an arrest", ...
+  verdict: "right" | "wrong" | "missed" | "unknown"; // missed: kept an officer who turned out not to be needed
+  text: string;
+}
+
 export interface OpConfig {
   scenario: Scenario;
   pool: Call[]; // eligible real calls to sample from
@@ -101,6 +112,7 @@ export interface OpState {
   drones: OpDrone[];
   events: OpEvent[];
   impacts: OpImpact[];
+  reveals: OpReveal[];
   kmFlown: number;
   capacity: number; // missions the operator team can supervise at once
   finished: boolean;
@@ -203,6 +215,7 @@ export function createOperator(cfg: OpConfig): OpState {
     drones,
     events: [],
     impacts: [],
+    reveals: [],
     kmFlown: 0,
     capacity: Math.max(1, sc.operators.count * sc.operators.maxConcurrentDrones),
     finished: false,
@@ -251,6 +264,7 @@ function spawnCall(s: OpState) {
     src,
     t: s.t,
     visibleAt: s.t + (src.entry ?? 60),
+    dispatchAt: src.disp != null ? s.t + src.disp : null,
     officerAt: src.onscene != null ? s.t + src.onscene : null,
     status: "waiting",
     droneId: null,
@@ -375,10 +389,48 @@ export function decide(s: OpState, callId: number, decision: "clear" | "officer"
           ? `Officers actually ${dispoText(call.src.dispo)}.`
           : "The record does not say whether that was right.";
     log(s, "decision", `Cleared ${callLabel(call)} without an officer. ${verdict}`, call.id);
+    const freed = officerTimeS(call);
+    s.reveals.push({
+      t: s.t,
+      callId: call.id,
+      decision,
+      found: foundText(call.src.dispo),
+      verdict: truth === true ? "right" : truth === false ? "wrong" : "unknown",
+      text:
+        truth === true
+          ? `Right call. An officer just got ${freed ? mins(freed) : "their time"} back.`
+          : truth === false
+            ? "Wrong call. Someone there needed an officer."
+            : "The record can't say if they were needed.",
+    });
   } else {
     log(s, "decision", `Kept the officer coming to ${callLabel(call)}; drone stays overhead until they arrive.`, call.id);
   }
   return null;
+}
+
+/** The real disposition in plain words, for the reveal. */
+function foundText(code: string): string {
+  const m: Record<string, string> = {
+    GOA: "Gone on arrival",
+    UTL: "Unable to locate anyone",
+    PAS: "Premises secure",
+    VAS: "Vehicle secure",
+    NCR: "Nothing criminal",
+    NOM: "No merit to the call",
+    CAN: "Call cancelled",
+    "22": "Call cancelled",
+    ARR: "Made an arrest",
+    CIT: "Issued a citation",
+    REP: "Took a report",
+    CRM: "Found criminal activity",
+    HAN: "Handled it on scene",
+    ADV: "Advised the people involved",
+    ABA: "Abated the problem",
+    ADM: "Admonished someone",
+    SFD: "Called medics",
+  };
+  return m[code] ?? "Closed without a clear finding";
 }
 
 function dispoText(code: string): string {
@@ -452,6 +504,7 @@ function stepOnce(s: OpState, dt: number) {
           call.status = "onscene";
           call.droneAt ??= s.t;
           const first = !call.officerArrived;
+          if (first) impact(s, call, "sooner", call.officerAt != null ? `Eyes on ${mins(call.officerAt - s.t)} before the officer` : "Eyes on first");
           log(
             s,
             "drone",
@@ -490,7 +543,22 @@ function stepOnce(s: OpState, dt: number) {
     if (c.droneAt != null && c.droneAt < c.officerAt) {
       if (d) recall(s, d.id, null);
       close(s, c, "drone_then_officer");
-      impact(s, c, "sooner", `Eyes on ${mins(c.officerAt - c.droneAt)} sooner`);
+      if (c.decision === "officer" && c.report) {
+        const truth = c.report.clearable;
+        s.reveals.push({
+          t: s.t,
+          callId: c.id,
+          decision: "officer",
+          found: foundText(c.src.dispo),
+          verdict: truth === false ? "right" : truth === true ? "missed" : "unknown",
+          text:
+            truth === false
+              ? "Right call. The officer was needed there."
+              : truth === true
+                ? "The officer wasn't needed. You could have cleared it."
+                : "The record can't say if they were needed.",
+        });
+      }
       log(s, "officer", `Officer on scene at ${callLabel(c)}; your drone was there ${Math.round(c.officerAt - c.droneAt)} s earlier.`, c.id);
     } else if (c.droneId) {
       if (d) recall(s, d.id, null);

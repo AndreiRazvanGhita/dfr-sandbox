@@ -22,7 +22,7 @@ npm install
 npm start
 ```
 
-Opens the simulation at `http://localhost:5173`. Needs Node 20+ (built on Node 24). The data is pre-built in `public/data/` (2.8 MB: calls and district boundaries),
+Opens the simulation at `http://localhost:5173`. Needs Node 20+ (built on Node 24). The data is pre-built in `public/data/` (3.7 MB: calls, district boundaries and streets),
 so no download or API key is needed. The map is Esri World Imagery (0.3 m over San Francisco, fetched at double resolution on
 high-DPI screens) with OpenStreetMap labels; a Streets basemap is one click away in the top bar. `?preset=soma|citywide|fixedwing` pre-selects a fleet.
 
@@ -33,13 +33,14 @@ The screen is the map plus four floating controls: the clock and speed (top left
 (top right), the selected call with a **live drone camera feed** and its actions (bottom right), and the fleet with battery levels and
 timers (bottom left). Drones fly as rotating icons with trails, calls pulse in their priority colour, officers show up as a badge when
 they reach a scene, every clearance gets an instant verdict, a heart counter tracks people reached sooner, imagery dims at night with the shift clock,
-the start screen orbits the city in 3D, and there are sound cues (toggle in the top bar).
+and the start screen orbits the city in 3D.
 
-**Camera.** In *Auto* the camera locks onto your selected call and swings to each new alert (decisions first, then new priority A
-calls, drones arriving, impact moments), holding a few seconds before coming back. It frames a waiting call close up, a drone in
-flight together with its destination as a chase shot, and orbits the scene once the drone is overhead. *Lock* stays on your call;
-*Free* hands the map to you, and dragging or scrolling switches to it. F toggles Free and Auto; clicking an alert or a call
-re-locks onto it.
+**Camera.** The camera locks onto the call that needs your decision and stays there until you make it: launch a drone, leave
+it to officers, or clear or keep the officer after the scene read. Then it moves to the next call that needs you (scene reads
+first, then by priority). New alerts don't pull it away; they show in the ticker. It frames a waiting call close up, a drone in
+flight together with its destination as a chase shot, and orbits the scene once the drone is overhead. With nothing waiting on
+you, it follows alerts around the city. *Lock* never follows alerts; *Free* hands the map to you, and dragging or scrolling
+switches to it. F toggles Free and Auto; clicking an alert or a call re-locks onto it.
 
 - **Calls arrive at random but are real.** Arrivals follow a Poisson process at San Francisco's real rate for each hour of the day,
   and every call is a real drone-eligible 911 call from the 56 loaded days, re-timed: its type, priority, masked location,
@@ -47,15 +48,22 @@ re-locks onto it.
 - **You make the calls.** Select a call in the CAD queue or on the map; launch the fastest drone (the map shows dashed ETA lines from
   every dock), launch from a specific dock by clicking it, divert an airborne drone, recall one, or skip the call and leave it to officers.
 - **On scene you decide.** About 20 s after arriving, the drone gives a scene read: "no one matching the description", "activity
-  matching the call is visible", "premises appear secure"… You clear the call without an officer, or keep the officer coming while the
-  drone gives overwatch. 15% of reads are blocked by rooftops and trees.
+  matching the call is visible", "premises appear secure"… Time slows, the city dims and the drone feed moves to centre screen
+  while you decide: clear the call without an officer, or keep the officer coming while the drone gives overwatch. 15% of reads
+  are blocked by rooftops and trees.
 - **Scoring is against the record.** Clearing a call counts as right when officers really found nothing to act on (gone on arrival,
   unable to locate, premises secure, non-criminal, no merit, cancelled) and wrong when they made an arrest, wrote a report, cited
   or handled something. Officers arrive at their real times unless you cleared the call first; drones head home when the officer is
   on scene or the battery reaches what the trip home needs.
-- **Who helps, on every call.** Each call shows what a caller typically reports for that call type (illustrative), who is waiting
-  for help, and a chain of help: 911 call → call-taker → drone → officer, filling in as each one arrives. When a drone beats the
-  officer or a clearance frees an officer, the map shows it at the call ("Eyes on 18 min sooner", "Officer freed · 12 min").
+- **Every call is a race.** Each call shows what a caller typically reports for that call type (illustrative), who is waiting for
+  help, the 911 call and call-taker times, and two lanes racing to the scene: your drone (its ETA, or how far the fastest one is
+  if you launch now) and the real officer, counting down to their recorded on-scene time. On the map, every dispatched officer is a
+  police car driving DataSF street centerlines (obeying one-way streets) to the scene, arriving at the recorded on-scene time.
+  Unit locations are not public, so each car starts from a patrol position 0.6–2 km away and keeps driving (cruising nearby
+  streets first when the real trip took longer); the route is illustrative, the timing is real. When the drone gets there first,
+  an "EYES ON SCENE" stamp says by how much.
+- **What officers actually found.** After you clear a call, and when the officer arrives on a call you kept them on, a card flips
+  over with the real disposition ("Gone on arrival", "Made an arrest") and whether your call was right.
 - **Officer time returned is real.** It is the actual travel and on-scene time officers spent on that call (dispatch to close in the
   record), counted only when your clearance matches what they found.
 - **End of shift.** The shift report answers the question and is compared with an auto-dispatch rule playing the exact same calls
@@ -86,6 +94,7 @@ reaches the whole city. Operators cap how many drones can be airborne at once.
 |---|---|---|---|
 | Law Enforcement Dispatched Calls for Service: Closed | [DataSF `2zdj-bwza`](https://data.sf.gov/d/2zdj-bwza) | PDDL | 37,496 911-originated police calls, Aug + Oct 2026 |
 | Current Police Districts (Oct 1, 2026 boundaries) | [DataSF `d4vc-q76h`](https://data.sf.gov/d/d4vc-q76h) | PDDL | Every call re-assigned to the new districts |
+| Streets – Active and Retired | [DataSF `3psu-pn9h`](https://data.sf.gov/d/3psu-pn9h) | PDDL | Street graph (9,273 intersections) for officer car routes |
 | Aerial imagery | [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9) (Vantor, Earthstar Geographics) | Esri terms of use, attribution required; check them before any commercial use | Satellite basemap and drone camera feed |
 | Basemap and labels | [OpenFreeMap](https://openfreemap.org) | OpenStreetMap data, ODbL | Streets basemap; street and neighbourhood labels on imagery |
 
@@ -129,7 +138,7 @@ are not the real ones. Caller quotes are illustrative and keyed only on the call
 ## Reproduce
 
 ```bash
-npm run data       # rebuild public/data from DataSF (Python 3.9+, stdlib only)
+npm run data       # rebuild public/data from DataSF: calls, districts, streets (Python 3.9+, stdlib only)
 npm run bot -- citywide 2   # play a shift with the auto-dispatch rule (fleet, call volume)
 npm run docs       # writes docs/assumptions.md from config/assumptions.json
 npm run build      # typecheck and production build
@@ -143,8 +152,8 @@ paths, so `dist/` also works from any other static host or subfolder.
 ```
 config/assumptions.json   every parameter with its source
 pipeline/build_data.py    DataSF → public/data (stdlib Python)
-src/sim/                  operator simulation, fleets, aircraft defaults, call data (no DOM)
-src/ui/operator/          the simulation: full-screen map, HUD, camera, drone feed, sound
+src/sim/                  operator simulation, fleets, aircraft defaults, call data, street routing (no DOM)
+src/ui/operator/          the simulation: full-screen map, HUD, camera, drone feed
 scripts/                  auto-dispatch bot and the assumptions doc generator
 docs/                     generated assumptions table
 ```

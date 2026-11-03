@@ -25,8 +25,11 @@ const mmss = (sec: number) => `${Math.floor(Math.max(0, sec) / 60)}:${String(Mat
 const shortDock = (name: string) => name.replace(/ \(.*\)$/, "").replace("Fire Station ", "FS ").replace(" hub", "");
 
 /** Open calls: the ones needing a decision first, then waiting ones by priority and age. */
+/** The call is waiting on the operator: no drone sent yet, or a scene read to clear or keep the officer. */
+export const needsDecision = (c: OpCall) => c.status === "waiting" || (c.status === "onscene" && !!c.report && !c.decision);
+
 export function openCalls(s: OpState): OpCall[] {
-  const rank = (c: OpCall) => (c.status === "onscene" && c.report && !c.decision ? 0 : c.status === "waiting" ? 1 : 2);
+  const rank = (c: OpCall) => (c.status === "onscene" && needsDecision(c) ? 0 : c.status === "waiting" ? 1 : 2);
   return s.calls
     .filter((c) => c.visibleAt <= s.t && c.status !== "closed")
     .sort((a, b) => rank(a) - rank(b) || a.src.prioO.localeCompare(b.src.prioO) || a.visibleAt - b.visibleAt);
@@ -46,18 +49,16 @@ interface TopBarProps {
   s: OpState;
   playing: boolean;
   speed: number;
-  muted: boolean;
   helped: number;
   camMode: CamMode;
   onCamMode: (m: CamMode) => void;
   onPlay: () => void;
   onSpeed: (v: number) => void;
-  onMute: () => void;
   onEnd: () => void;
   basemapToggle: React.ReactNode;
 }
 
-export function TopBar({ s, playing, speed, muted, helped, camMode, onCamMode, onPlay, onSpeed, onMute, onEnd, basemapToggle }: TopBarProps) {
+export function TopBar({ s, playing, speed, helped, camMode, onCamMode, onPlay, onSpeed, onEnd, basemapToggle }: TopBarProps) {
   const progress = Math.min(1, (s.t - s.cfg.startT) / s.cfg.durationS);
   return (
     <div className="hud topbar">
@@ -96,9 +97,6 @@ export function TopBar({ s, playing, speed, muted, helped, camMode, onCamMode, o
         ))}
       </div>
       {basemapToggle}
-      <button className="hud-icon" onClick={onMute} aria-label={muted ? "Sound off" : "Sound on"} title={muted ? "Sound off" : "Sound on"}>
-        {muted ? "🔇" : "🔊"}
-      </button>
       <button className="hud-btn" onClick={onEnd}>
         End shift
       </button>
@@ -156,32 +154,74 @@ interface CardProps {
   onClose: () => void;
 }
 
-/** Who helps, in order: the 911 call-taker, the operator and drone, then the officer. */
-function ChainOfHelp({ s, call }: { s: OpState; call: OpCall }) {
+/** The race on every call: your drone against the real officer, both heading for the same scene.
+ * The officer lane counts down to the recorded on-scene time; the drone lane to its ETA or the fastest launch. */
+export function RaceTrack({ s, call }: { s: OpState; call: OpCall }) {
   const drone = droneOf(s, call.droneId);
-  const steps: { icon: string; who: string; when: string; state: "done" | "now" | "todo" }[] = [
-    { icon: "📞", who: "911 call", when: fmtClock(call.t), state: "done" },
-    { icon: "🖥", who: "Call-taker", when: fmtClock(call.visibleAt), state: "done" },
-    {
-      icon: "🚁",
-      who: "Drone",
-      when: call.droneAt != null ? fmtClock(call.droneAt) : drone ? `ETA ${mmss(etaS(drone, drone.target ?? drone.pos))}` : "you decide",
-      state: call.droneAt != null ? "done" : drone ? "now" : "todo",
-    },
-    { icon: "🚓", who: "Officer", when: call.officerArrived ? fmtClock(call.officerAt!) : "en route", state: call.officerArrived ? "done" : "now" },
-  ];
+  const best = !drone && call.status === "waiting" ? candidates(s, call).find((x) => !x.reason) : undefined;
+  const t = s.t;
+
+  let droneArrive: number | null = null; // projected or actual drone on scene
+  let droneFrac = 0;
+  let droneText: string;
+  if (call.droneAt != null) {
+    droneArrive = call.droneAt;
+    droneFrac = 1;
+    droneText = `on scene ${fmtClock(call.droneAt)}`;
+  } else if (drone && drone.target) {
+    const eta = etaS(drone, drone.target);
+    droneArrive = t + eta;
+    const from = call.launchedAt ?? t;
+    droneFrac = droneArrive > from ? (t - from) / (droneArrive - from) : 0;
+    droneText = `${PHASE[drone.phase].toLowerCase()} · ${mmss(eta)}`;
+  } else if (best) {
+    droneArrive = t + best.eta;
+    droneText = `not sent · ${Math.round(best.eta)} s away`;
+  } else droneText = call.status === "closed" ? "not flown" : "no drone free";
+
+  const officerKnown = call.officerAt != null;
+  const officerFrac = call.officerArrived ? 1 : officerKnown ? (t - call.visibleAt) / Math.max(1, call.officerAt! - call.visibleAt) : 0;
+  const officerText = call.officerArrived
+    ? `on scene ${fmtClock(call.officerAt!)}`
+    : officerKnown
+      ? `${call.dispatchAt != null && t < call.dispatchAt ? "queued" : "dispatched"} · ${mmss(call.officerAt! - t)} out`
+      : "no recorded arrival";
+
+  let lead: { text: string; cls: string } | null = null;
+  if (droneArrive != null && officerKnown) {
+    const gap = call.officerAt! - droneArrive;
+    const sent = drone || call.droneAt != null;
+    if (gap > 0) lead = { text: `${sent ? "Drone ahead by" : "A drone would be there"} ${mmss(gap)}${sent ? "" : " sooner"}`, cls: sent ? "ahead" : "could" };
+    else lead = { text: `Officer ahead by ${mmss(-gap)}`, cls: "behind" };
+  }
+
+  const lane = (who: string, icon: string, frac: number, text: string, cls: string) => (
+    <div className={`lane ${cls}`}>
+      <span className="lane-who">{who}</span>
+      <span className="lane-track">
+        <span className="lane-fill" style={{ width: `${Math.max(0, Math.min(1, frac)) * 100}%` }} />
+        <span className="lane-icon" style={{ left: `${Math.max(0, Math.min(1, frac)) * 100}%` }} aria-hidden="true">
+          {icon}
+        </span>
+        <span className="lane-flag" aria-hidden="true">
+          ⚑
+        </span>
+      </span>
+      <span className="lane-text num">{text}</span>
+    </div>
+  );
+
   return (
-    <ol className="chain" aria-label="Who helps on this call">
-      {steps.map((st) => (
-        <li key={st.who} className={st.state}>
-          <span className="chain-icon" aria-hidden="true">
-            {st.icon}
-          </span>
-          <span className="chain-who">{st.who}</span>
-          <span className="chain-when num">{st.when}</span>
-        </li>
-      ))}
-    </ol>
+    <div className="race" aria-label="Drone against officer">
+      <div className="race-head">
+        <span>
+          📞 911 {fmtClock(call.t)} → 🖥 call-taker {fmtClock(call.visibleAt)}
+        </span>
+        {lead && <b className={`race-lead ${lead.cls}`}>{lead.text}</b>}
+      </div>
+      {lane("Drone", "🚁", droneFrac, droneText, call.droneAt != null ? "drone done" : drone ? "drone go" : "drone idle")}
+      {lane("Officer", "🚓", officerFrac, officerText, call.officerArrived ? "officer done" : "officer go")}
+    </div>
   );
 }
 
@@ -222,7 +262,7 @@ export function CallCard({ s, simRef, call, onLaunch, onDecide, onSkip, onRecall
         </span>
       </blockquote>
 
-      <ChainOfHelp s={s} call={call} />
+      <RaceTrack s={s} call={call} />
 
       {drone && call.status !== "closed" && (
         <DroneCam simRef={simRef} droneId={drone.id} callId={call.id} caption={caption} ambiguous={!!call.report?.ambiguous} />

@@ -111,3 +111,40 @@ export const officerIcon = () =>
     c.fillStyle = "#fab219";
     c.fill();
   });
+
+/** Top-down police car pointing up (north): dark body, white doors, red and blue light bar. */
+export const policeCarIcon = () =>
+  draw(72, (c, s) => {
+    const w = s * 0.44;
+    const h = s * 0.86;
+    const x = (s - w) / 2;
+    const y = (s - h) / 2;
+    const rect = (rx: number, ry: number, rw: number, rh: number, r: number) => {
+      c.beginPath();
+      c.roundRect(rx, ry, rw, rh, r);
+    };
+    c.shadowColor = "rgba(0,0,0,0.6)";
+    c.shadowBlur = 6;
+    rect(x, y, w, h, w * 0.32);
+    c.fillStyle = "#14171c";
+    c.fill();
+    c.shadowBlur = 0;
+    c.lineWidth = 2.5;
+    c.strokeStyle = "#ffffff";
+    c.stroke();
+    // White doors across the middle.
+    rect(x + 2, y + h * 0.36, w - 4, h * 0.3, 2);
+    c.fillStyle = "#f2f2ef";
+    c.fill();
+    // Windshield (front, up) and rear window.
+    rect(x + w * 0.16, y + h * 0.13, w * 0.68, h * 0.14, 3);
+    c.fillStyle = "#6f8fb3";
+    c.fill();
+    rect(x + w * 0.18, y + h * 0.74, w * 0.64, h * 0.1, 3);
+    c.fill();
+    // Light bar: red and blue halves.
+    c.fillStyle = "#ff3b30";
+    c.fillRect(x + w * 0.12, y + h * 0.29, w * 0.38, h * 0.06);
+    c.fillStyle = "#2f7bff";
+    c.fillRect(x + w * 0.5, y + h * 0.29, w * 0.38, h * 0.06);
+  });
